@@ -1,0 +1,9 @@
+name: xwebsocket
+version: "1.0.0"
+entry_class: extensions.xwebsocket.main:WsManager
+description: >
+  Extension XCore de gestion WebSocket multi-canal.
+  Gère la connexion, déconnexion, broadcast par canal et présence des utilisateurs.
+  Canaux configurables dans integration.yaml (user, admin, broadcast, platform).
+homepage: https://github.com/xcore-team/xwebsocket
+repository: https://github.com/xcore-team/xwebsocket
