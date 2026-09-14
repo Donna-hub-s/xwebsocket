@@ -6,9 +6,12 @@ from typing import Any, Optional
 
 from fastapi import Request, WebSocket, WebSocketDisconnect
 from xcore.kernel.api.auth import AuthPayload, get_auth_backend
+from xcore.sdk import get_logger
 from xcore.services.base import BaseService, ServiceStatus
 
 from .ws import WebSocketManager
+
+logger = get_logger("ext.websocket")
 
 
 @dataclass
@@ -47,11 +50,25 @@ class WsManager(BaseService):
         # interface .headers/.cookies/.query_params, donc ça passe.
         response: AuthPayload = await self._resolve_auth(request)
 
+        # Auth OBLIGATOIRE : sans jeton valide (backend absent, token absent
+        # ou invalide), on refuse — l'ancien code continuait avec
+        # response=None et connectait le socket en anonyme (user_id=None),
+        # exposant tous les broadcasts du canal à n'importe qui.
+        if not response or not response.get("sub"):
+            logger.warning(
+                "connexion websocket anonyme refusée",
+                channel=channel,
+            )
+            await ws.accept()
+            await ws.close(code=4401)
+            return
+
         # Sécurité
         if not self.configuration or channel not in self.configuration.channel:
-            print(
-                f"[WS SECURITY] User {response.get('sub') if response else None} denied access to channel "
-                f"'{channel}' (missing module {channel})"
+            logger.warning(
+                "accès canal websocket refusé",
+                user_id=response.get("sub"),
+                channel=channel,
             )
             await ws.accept()
             await ws.close(code=4003)
@@ -60,7 +77,7 @@ class WsManager(BaseService):
         client_id = str(uuid.uuid4())
 
         inf: dict[str, str] = {
-            "sub": str(response.get("sub")) if response else "",
+            "sub": str(response.get("sub")),
             "channel": str(channel),
         }
         self.client_ids[client_id] = inf
@@ -73,7 +90,7 @@ class WsManager(BaseService):
 
         await self.ws.connect(
             channel=channel, client_id=client_id, ws=ws,
-            user_id=response.get("sub") if response else None,
+            user_id=response.get("sub"),
         )
 
         try:
@@ -83,7 +100,7 @@ class WsManager(BaseService):
             await self.ws.disconnect(channel=channel, client_id=client_id)
             self.client_ids.pop(client_id, None)
         except Exception as e:
-            print(f"[WS] Deconnexion inattendue {client_id[:8]} sur {channel}: {e}")
+            logger.warning("déconnexion websocket inattendue", client_id=client_id[:8], channel=channel, error=str(e))
             await self.ws.disconnect(channel=channel, client_id=client_id)
             self.client_ids.pop(client_id, None)
 
