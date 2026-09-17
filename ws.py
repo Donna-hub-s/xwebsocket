@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import WebSocket
+
+logger = logging.getLogger("xcore.websocket")
 
 
 @dataclass(frozen=True)
 class _Client:
     ws: WebSocket
     user_id: str | None
+    # Contexte d'autorisation figé à la connexion (tenant_id, permissions) :
+    # permet un envoi ciblé par règle d'accès (send_where) sans requête base.
+    claims: Mapping[str, Any] = field(default_factory=dict)
 
 
 class WebSocketManager:
@@ -26,37 +34,29 @@ class WebSocketManager:
         channel: str,
         client_id: str,
         ws: WebSocket,
-        user_id: str | None = None
+        user_id: str | None = None,
+        claims: Mapping[str, Any] | None = None,
     ) -> None:
         await ws.accept()
         async with self._lock:
-            self._channels[channel][client_id] = _Client(ws=ws, user_id=user_id)
-
-        print(f"[WS] {client_id[:8]} (user={user_id}) connecté au channel '{channel}'")
-
-        if user_id is not None:
-            await self.broadcast(channel, "PRESENCE", {"userId": user_id, "action": "JOIN"})
+            self._channels[channel][client_id] = _Client(ws=ws, user_id=user_id, claims=dict(claims or {}))
+        # Pas de diffusion de présence : le canal est partagé par tous les
+        # tenants, annoncer les connexions exposerait les identifiants d'utilisateurs.
+        logger.debug("websocket connecté client=%s channel=%s", client_id[:8], channel)
 
     async def disconnect(self, channel: str, client_id: str) -> None:
         async with self._lock:
-            client = self._channels[channel].pop(client_id, None)
-
-        if client and client.user_id is not None:
-            # broadcast est async => on peut la faire directement ici
-            await self.broadcast(channel, "PRESENCE", {"userId": client.user_id, "action": "LEAVE"})
-
-        print(f"[WS] {client_id[:8]} déconnecté du channel '{channel}'")
+            self._channels[channel].pop(client_id, None)
+        logger.debug("websocket déconnecté client=%s channel=%s", client_id[:8], channel)
 
     @staticmethod
     def _encode(channel: str, event: str, data: Any) -> str:
-        from datetime import datetime
-
         return json.dumps({
             "channel": channel,
             "action": event.upper(),
             "payload": data,
             "id": (data.get("id") if isinstance(data, dict) else None),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }, ensure_ascii=False, default=str)
 
     async def send_to_user(self, user_id: str, channel: str, event: str, data: Any) -> int:
@@ -73,12 +73,32 @@ class WebSocketManager:
             try:
                 await client.ws.send_text(message)
             except Exception as e:
-                print(f"[WS] Erreur envoi à {cid[:8]} (user={user_id}) sur '{channel}': {e}")
+                logger.warning("envoi websocket échoué client=%s channel=%s : %s", cid[:8], channel, e)
                 dead.append(cid)
 
         if dead:
             await asyncio.gather(*(self.disconnect(channel, cid) for cid in set(dead)))
 
+        return len(targets) - len(dead)
+
+    async def send_where(
+        self, channel: str, event: str, data: Any, predicate: Callable[[Mapping[str, Any]], bool]
+    ) -> int:
+        """Envoie aux seuls clients dont le contexte d'autorisation satisfait
+        `predicate` (ex. : utilisateurs autorisés sur le numéro WhatsApp)."""
+        message = self._encode(channel, event, data)
+        async with self._lock:
+            targets = [(cid, c) for cid, c in self._channels[channel].items() if c.user_id and predicate(c.claims)]
+
+        dead: list[str] = []
+        for cid, client in targets:
+            try:
+                await client.ws.send_text(message)
+            except Exception as e:
+                logger.warning("envoi websocket échoué client=%s channel=%s : %s", cid[:8], channel, e)
+                dead.append(cid)
+        if dead:
+            await asyncio.gather(*(self.disconnect(channel, cid) for cid in set(dead)))
         return len(targets) - len(dead)
 
     async def broadcast(self, channel: str, event: str, data: Any) -> None:
@@ -94,7 +114,7 @@ class WebSocketManager:
             try:
                 await client.ws.send_text(message)
             except Exception as e:
-                print(f"[WS] Erreur envoi à {cid[:8]} sur '{channel}': {e}")
+                logger.warning("envoi websocket échoué client=%s channel=%s : %s", cid[:8], channel, e)
                 dead.append(cid)
 
         # Envoi parallèle
@@ -103,12 +123,6 @@ class WebSocketManager:
         if dead:
             # Supprimer proprement
             await asyncio.gather(*(self.disconnect(channel, cid) for cid in set(dead)))
-
-        print(
-            f"[WS BROADCAST] channel={channel} action={event.upper()} "
-            f"clients={len(self._channels[channel])} "
-            f"id={(data.get('id') if isinstance(data, dict) else '-')}"
-        )
 
     def connected_count(self, channel: str) -> int:
         return len(self._channels.get(channel, {}))

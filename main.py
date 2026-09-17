@@ -91,6 +91,11 @@ class WsManager(BaseService):
         await self.ws.connect(
             channel=channel, client_id=client_id, ws=ws,
             user_id=response.get("sub"),
+            claims={
+                "tenant_id": (response.get("user") or {}).get("tenant_id"),
+                "permissions": frozenset(response.get("permissions") or [])
+                | frozenset(response.get("roles") or []),
+            },
         )
 
         try:
@@ -121,6 +126,11 @@ class WsManager(BaseService):
         if self.ws is None:
             return 0
         return await self.ws.send_to_user(user_id, channel, event, data)
+
+    async def send_where(self, channel: str, event: str, data: Any, predicate) -> int:
+        if self.ws is None:
+            return 0
+        return await self.ws.send_where(channel, event, data, predicate)
 
     async def health_check(
         self,
