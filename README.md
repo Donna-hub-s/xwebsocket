@@ -1,74 +1,24 @@
 # xwebsocket
 
-Extension XCore de gestion WebSocket multi-canal avec authentification JWT.
+Websockets.
 
-## Fonctionnalités
+Extension xcore de communication temps réel vers le navigateur : étapes, notifications, statuts d'ingestion.
 
-- Canaux configurables (user, admin, broadcast, platform, …)
-- Authentification JWT obligatoire via `get_current_user` à la connexion
-- Broadcast par canal en parallèle avec nettoyage automatique des clients morts
-- Événements de présence (`JOIN` / `LEAVE`) émis automatiquement
-- Accès via `self.get_service("ext.websocket")` depuis n'importe quel plugin
+## Place dans DONNA
 
-## Configuration
+Ce dépôt est un composant de [DONNA](https://github.com/Donna-hub-s), assistante augmentée
+bâtie sur le framework de plugins **xcore**. Il est monté comme sous-module à
+`backend/extensions/xwebsocket/` dans le dépôt applicatif, et n'est pas prévu pour tourner seul :
+xcore le charge, lui injecte ses services et lit son `plugin.yaml`.
 
-```yaml
-services:
-  extensions:
-    web_socket:
-      module: extensions.xwebsocket.main:WsManager
-      config:
-        channel:
-          - user
-          - admin
-          - broadcast
-          - platform
-```
+Les modules partagés avec les autres composants vivent dans
+[donna-commons](https://github.com/Donna-hub-s/donna-commons).
 
-## Utilisation depuis un plugin
+## Historique
 
-```python
-ws_manager = self.get_service("ext.websocket")
+Extrait du monorepo avec `git filter-repo` : l'historique des fichiers de ce composant
+est conservé, celui des autres composants ne l'est pas.
 
-# Broadcast vers tous les clients d'un canal
-await ws_manager.broadcast(channel="user", event="NOTIFICATION", data={"message": "Nouveau plugin publié"})
+## Licence
 
-# Infos de connexion
-info = await ws_manager.info()
-# → {"client_count": 3, "channels": ["user", "admin"], "client_ids": {...}}
-```
-
-### Enregistrer l'endpoint WebSocket
-
-Dans le `on_load()` du plugin, exposer la route via XCore :
-
-```python
-from extensions.xwebsocket.main import WsManager
-
-ws: WsManager = self.get_service("ext.websocket")
-self.router.add_api_websocket_route(
-    "/ws/{channel}",
-    ws.ws_endpoint,
-)
-```
-
-## Format des messages émis
-
-```json
-{
-  "channel": "user",
-  "action": "NOTIFICATION",
-  "payload": { "message": "..." },
-  "id": "...",
-  "timestamp": "2026-05-22T10:00:00.000000"
-}
-```
-
-## Structure
-
-```
-xwebsocket/
-├── main.py       # WsManager (BaseService) — lifecycle + sécurité
-├── ws.py         # WebSocketManager — connexions, broadcast, présence
-└── service.yaml  # Manifeste de l'extension
-```
+MIT — voir [LICENSE](LICENSE).
